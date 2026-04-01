@@ -1,14 +1,6 @@
-# My Lists - Redesign + Local Reminders
+# My Lists - Redesign v2
 
-What's new:
-- cleaner redesigned UI
-- settings screen
-- color theme presets
-- custom categories
-- local daily reminder logic using the Notifications API
-- reminder permission button
-- same persistence and swipe actions
-
-Important:
-Local reminders work while the app is open or running on your device.
-They are not full background push notifications.
+Updates:
+- category labels now resize and wrap instead of getting cut off
+- softer, less bright color theme presets
+- same saving, reminders, and customization options

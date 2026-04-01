@@ -1,10 +1,10 @@
 
 const TASK_KEY = "my-lists-tasks-v5";
-const PREFS_KEY = "my-lists-prefs-v5";
+const PREFS_KEY = "my-lists-prefs-v6";
 
 const defaultPrefs = {
-  accent: "#7c3aed",
-  accent2: "#c084fc",
+  accent: "#5b5f97",
+  accent2: "#8b90be",
   categories: ["Work", "Finance", "Personal", "Shopping List"],
   dailyReminderEnabled: false,
   dailyReminderTime: "09:00",
@@ -12,26 +12,12 @@ const defaultPrefs = {
 };
 
 const accentPresets = [
-  ["#7c3aed","#c084fc"],
-  ["#0f766e","#2dd4bf"],
-  ["#2563eb","#60a5fa"],
-  ["#db2777","#f472b6"],
-  ["#ea580c","#fdba74"],
-  ["#111827","#475569"]
-];
-
-const sectionsBase = [
-  { name: "Home", icon: "⌂", short: "Home" },
-  { name: "Settings", icon: "⚙", short: "Settings" }
-];
-
-const timeframeOptions = ["All", "Today", "This Week", "This Month"];
-
-const initialTasks = [
-  { id: 1, title: "Reply to team emails", section: "Work", timeframe: "Today", done: false },
-  { id: 2, title: "Review monthly budget", section: "Finance", timeframe: "This Month", done: false },
-  { id: 3, title: "Call mom", section: "Personal", timeframe: "This Week", done: false },
-  { id: 4, title: "Eggs", section: "Shopping List", timeframe: "Today", done: true },
+  ["#5b5f97","#8b90be"],
+  ["#4b6b63","#87a59a"],
+  ["#4f6d8a","#88a7c3"],
+  ["#8b5e6b","#c0949f"],
+  ["#8a6648","#c3a07f"],
+  ["#374151","#6b7280"]
 ];
 
 function loadPrefs(){
@@ -47,7 +33,7 @@ const prefs = loadPrefs();
 function currentSections(){
   return [
     { name: "Home", icon: "⌂", short: "Home" },
-    ...prefs.categories.map((name) => ({ name, icon: "•", short: name.length > 6 ? name.slice(0,6) : name })),
+    ...prefs.categories.map((name) => ({ name, icon: "•", short: name })),
     { name: "Settings", icon: "⚙", short: "Settings" }
   ];
 }
@@ -77,10 +63,15 @@ function normalizeTask(task, now=new Date()){
 function loadTasks(){
   try{
     const saved = localStorage.getItem(TASK_KEY);
-    const base = saved ? JSON.parse(saved) : initialTasks;
+    const base = saved ? JSON.parse(saved) : [
+      { id: 1, title: "Reply to team emails", section: "Work", timeframe: "Today", done: false },
+      { id: 2, title: "Review monthly budget", section: "Finance", timeframe: "This Month", done: false },
+      { id: 3, title: "Call mom", section: "Personal", timeframe: "This Week", done: false },
+      { id: 4, title: "Eggs", section: "Shopping List", timeframe: "Today", done: true }
+    ];
     return base.map((task)=>normalizeTask(task));
   }catch{
-    return initialTasks.map((task)=>normalizeTask(task));
+    return [];
   }
 }
 
@@ -92,17 +83,13 @@ const state = {
   showComposer: false,
   showInstallHelp: false,
   showSortMenu: false,
-  showCategoryManager: false,
   draft: { title: "", timeframe: "Today", category: prefs.categories[0] || "Work" },
   reminderLastShownKey: null
 };
 
-function saveTasks(){
-  try{ localStorage.setItem(TASK_KEY, JSON.stringify(state.tasks)); }catch(e){ console.log("task save failed", e); }
-}
-function savePrefs(){
-  try{ localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); }catch(e){ console.log("prefs save failed", e); }
-}
+function saveTasks(){ try{ localStorage.setItem(TASK_KEY, JSON.stringify(state.tasks)); }catch(e){ console.log("task save failed", e); } }
+function savePrefs(){ try{ localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); }catch(e){ console.log("prefs save failed", e); } }
+
 function applyTheme(){
   document.documentElement.style.setProperty("--accent", prefs.accent);
   document.documentElement.style.setProperty("--accent-2", prefs.accent2);
@@ -173,7 +160,6 @@ function ensureValidCategory(){
   if(!prefs.categories.includes(state.draft.category)){
     state.draft.category = prefs.categories[0] || "Work";
   }
-  state.tasks = state.tasks.filter((task) => prefs.categories.includes(task.section) || task.section === "Archived");
 }
 
 function addTask(keepOpen){
@@ -195,16 +181,8 @@ function addTask(keepOpen){
   if(!keepOpen){ state.showComposer = false; render(); }
   if(state.showComposer) setTimeout(()=>document.getElementById("task-input")?.focus(),10);
 }
-function toggleTask(id){
-  state.tasks = state.tasks.map((task)=>task.id===id?{...task,done:!task.done}:task);
-  saveTasks();
-  render();
-}
-function deleteTask(id){
-  state.tasks = state.tasks.filter((task)=>task.id!==id);
-  saveTasks();
-  render();
-}
+function toggleTask(id){ state.tasks = state.tasks.map((task)=>task.id===id?{...task,done:!task.done}:task); saveTasks(); render(); }
+function deleteTask(id){ state.tasks = state.tasks.filter((task)=>task.id!==id); saveTasks(); render(); }
 function addCategory(name){
   const clean = name.trim();
   if(!clean) return;
@@ -236,9 +214,7 @@ function getSectionCards(){
     };
   });
 }
-function getTodayTasks(){
-  return state.tasks.filter((task)=>!task.done && task.timeframe==="Today").sort((a,b)=>a.section.localeCompare(b.section));
-}
+function getTodayTasks(){ return state.tasks.filter((task)=>!task.done && task.timeframe==="Today").sort((a,b)=>a.section.localeCompare(b.section)); }
 function getVisibleTasks(){
   if(state.activeTab === "Home" || state.activeTab === "Settings") return [];
   const order = {"Today":0,"This Week":1,"This Month":2};
@@ -248,9 +224,8 @@ function getVisibleTasks(){
     .filter((task)=>state.selectedSort==="All" || task.timeframe===state.selectedSort)
     .sort((a,b)=>order[a.timeframe]-order[b.timeframe] || Number(a.done)-Number(b.done));
 }
-function escapeHtml(text){
-  return String(text).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
-}
+function escapeHtml(text){ return String(text).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;"); }
+
 function taskCard(task, showSection=false){
   return `<div class="task-wrap" data-task="${task.id}">
     <div class="swipe-bg left">Delete</div>
@@ -280,7 +255,7 @@ function renderHome(){
       <div>
         <div class="eyebrow">Simple daily organizer</div>
         <h1>Today</h1>
-        <p class="sub">A cleaner daily view with categories, color themes, and local reminders.</p>
+        <p class="sub">A cleaner daily view with categories, softer color themes, and local reminders.</p>
       </div>
       <div style="display:flex;gap:8px">
         <button class="small-btn" id="ask-permission-btn">Alerts</button>
@@ -297,7 +272,7 @@ function renderHome(){
       ${todayTasks.length ? todayTasks.map((task)=>taskCard(task,true)).join("") : `<div class="empty"><strong>Nothing due today 🎉</strong><p>Enjoy the free space or add something new.</p></div>`}
     </div>
     <div class="shortcut-list" style="margin-top:16px">
-      ${cards.map((card)=>`<button class="shortcut-btn" data-open-section="${card.name}"><span>${card.name}</span><span class="muted">${card.open} open</span></button>`).join("")}
+      ${cards.map((card)=>`<button class="shortcut-btn" data-open-section="${card.name}"><span>${escapeHtml(card.name)}</span><span class="muted">${card.open} open</span></button>`).join("")}
     </div>
   </div>`;
 }
@@ -307,9 +282,9 @@ function renderSection(){
   return `<div class="header">
     <div class="header-row">
       <div style="display:flex;gap:8px"><button class="icon-btn" id="home-back-btn">←</button></div>
-      <div style="flex:1">
+      <div style="flex:1;min-width:0">
         <div class="eyebrow">Category</div>
-        <h1>${escapeHtml(state.activeTab)}</h1>
+        <h1 style="font-size:clamp(24px,6vw,30px);overflow-wrap:anywhere;word-break:break-word">${escapeHtml(state.activeTab)}</h1>
       </div>
       <div style="display:flex;gap:8px">
         <button class="icon-btn" id="sort-toggle-btn">⇅</button>
@@ -345,7 +320,7 @@ function renderSettings(){
       <div class="settings-item">
         <div class="label">Color theme</div>
         <div class="swatch-row">
-          ${accentPresets.map(([a,b], idx)=>`<button class="setting-swatch ${(prefs.accent===a && prefs.accent2===b)?"active":""}" data-accent="${a}" data-accent2="${b}" style="background:linear-gradient(135deg,${a},${b})"></button>`).join("")}
+          ${accentPresets.map(([a,b])=>`<button class="setting-swatch ${(prefs.accent===a && prefs.accent2===b)?"active":""}" data-accent="${a}" data-accent2="${b}" style="background:linear-gradient(135deg,${a},${b})"></button>`).join("")}
         </div>
       </div>
       <div class="settings-item">
@@ -365,7 +340,7 @@ function renderSettings(){
         </div>
         <div class="label">Reminder time</div>
         <input id="reminder-time-input" class="text-input" type="time" value="${prefs.dailyReminderTime}" />
-        <div class="note" style="margin-top:10px">This uses the browser notification permission and checks locally while the app is open. It will not behave like a true server push notification.</div>
+        <div class="note" style="margin-top:10px">This uses browser notification permission and checks locally while the app is open. It is not a true server push alert.</div>
       </div>
     </div>
   </div>`;
@@ -452,10 +427,7 @@ function bindEvents(){
     savePrefs();
     render();
   });
-  document.getElementById("reminder-time-input")?.addEventListener("change",(e)=>{
-    prefs.dailyReminderTime = e.target.value;
-    savePrefs();
-  });
+  document.getElementById("reminder-time-input")?.addEventListener("change",(e)=>{prefs.dailyReminderTime=e.target.value;savePrefs();});
   document.getElementById("add-category-btn")?.addEventListener("click",()=>{
     const input = document.getElementById("new-category-input");
     if(input) addCategory(input.value);
@@ -465,13 +437,9 @@ function bindEvents(){
   if(search) search.addEventListener("input",(e)=>{state.query=e.target.value;});
 
   const composer = document.getElementById("composer-sheet");
-  if(composer){
-    composer.addEventListener("click",(e)=>{if(e.target.id==="composer-sheet"){state.showComposer=false;render();}});
-  }
+  if(composer){ composer.addEventListener("click",(e)=>{if(e.target.id==="composer-sheet"){state.showComposer=false;render();}}); }
   const install = document.getElementById("install-sheet");
-  if(install){
-    install.addEventListener("click",(e)=>{if(e.target.id==="install-sheet"){state.showInstallHelp=false;render();}});
-  }
+  if(install){ install.addEventListener("click",(e)=>{if(e.target.id==="install-sheet"){state.showInstallHelp=false;render();}}); }
 
   const categorySelect = document.getElementById("draft-category-select");
   if(categorySelect) categorySelect.addEventListener("change",(e)=>{state.draft.category=e.target.value;});
