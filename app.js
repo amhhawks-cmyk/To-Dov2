@@ -333,12 +333,19 @@ function taskCard(task, showSection=false){
 function renderHome(){
   const todayTasks = getTodayTasks();
   const cards = getSectionCards();
+  const openToday = state.tasks.filter((t)=>!t.done && t.timeframe==="Today").length;
+  const openWeek = state.tasks.filter((t)=>!t.done && t.timeframe==="This Week").length;
+  const summary = openToday === 0 && openWeek === 0
+    ? "All caught up — nothing pending."
+    : openToday === 0
+      ? `No tasks due today, ${openWeek} this week.`
+      : `${openToday} task${openToday===1?"":"s"} due today${openWeek?`, ${openWeek} this week`:""}.`;
   return `<div class="header">
     <div class="header-row">
       <div>
         <div class="eyebrow">Simple daily organizer</div>
         <h1>Today</h1>
-        <p class="sub">A cleaner daily view with categories, softer color themes, and local reminders.</p>
+        <p class="sub">${summary}</p>
       </div>
       <div style="display:flex;gap:8px">
         <button class="small-btn" id="ask-permission-btn">Alerts</button>
