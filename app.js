@@ -8,7 +8,8 @@ const defaultPrefs = {
   categories: ["Work", "Finance", "Personal", "Shopping List"],
   dailyReminderEnabled: false,
   dailyReminderTime: "09:00",
-  notificationsPermissionAsked: false
+  notificationsPermissionAsked: false,
+  darkMode: false
 };
 
 const accentPresets = [
@@ -19,6 +20,8 @@ const accentPresets = [
   ["#8a6648","#c3a07f"],
   ["#374151","#6b7280"]
 ];
+
+const timeframeOptions = ["All", "Today", "This Week", "This Month"];
 
 function loadPrefs(){
   try{
@@ -84,22 +87,35 @@ const state = {
   showInstallHelp: false,
   showSortMenu: false,
   draft: { title: "", timeframe: "Today", category: prefs.categories[0] || "Work" },
-  reminderLastShownKey: null
+  reminderLastShownKey: null,
+  editingTaskId: null,
+  editingDraft: { title: "", timeframe: "Today", category: "" },
+  pendingUndo: null,    // { task, index, timeoutId } for undo-after-delete
+  undoTimerId: null
 };
 
-function saveTasks(){ try{ localStorage.setItem(TASK_KEY, JSON.stringify(state.tasks)); }catch(e){ console.log("task save failed", e); } }
-function savePrefs(){ try{ localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); }catch(e){ console.log("prefs save failed", e); } }
+function saveTasks(){ try{ localStorage.setItem(TASK_KEY, JSON.stringify(state.tasks)); }catch(e){ console.warn("task save failed", e); } }
+function savePrefs(){ try{ localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); }catch(e){ console.warn("prefs save failed", e); } }
 
 function applyTheme(){
   document.documentElement.style.setProperty("--accent", prefs.accent);
   document.documentElement.style.setProperty("--accent-2", prefs.accent2);
+  document.documentElement.dataset.theme = prefs.darkMode ? "dark" : "light";
   const meta = document.querySelector('meta[name="theme-color"]');
-  if(meta) meta.setAttribute("content", prefs.accent);
+  if(meta) meta.setAttribute("content", prefs.darkMode ? "#0f172a" : prefs.accent);
 }
 
 function refreshRollovers(){
-  const normalized = state.tasks.map((task)=>normalizeTask(task));
-  if(JSON.stringify(normalized)!==JSON.stringify(state.tasks)){
+  let changed = false;
+  const normalized = state.tasks.map((task)=>{
+    const next = normalizeTask(task);
+    // Shallow check on the fields normalizeTask might change.
+    if(next.timeframe !== task.timeframe || next.timeframeStamp !== task.timeframeStamp || next.createdAt !== task.createdAt){
+      changed = true;
+    }
+    return next;
+  });
+  if(changed){
     state.tasks = normalized;
     saveTasks();
     render();
@@ -122,12 +138,16 @@ function maybeFireReminder(){
   if(!("Notification" in window)) return;
   if(Notification.permission !== "granted") return;
   const now = new Date();
-  const hh = String(now.getHours()).padStart(2,"0");
-  const mm = String(now.getMinutes()).padStart(2,"0");
-  const current = `${hh}:${mm}`;
   const todayKey = getDateKey(now);
   const reminderKey = `${todayKey}-${prefs.dailyReminderTime}`;
-  if(current === prefs.dailyReminderTime && state.reminderLastShownKey !== reminderKey){
+  // Skip if we already fired today's reminder.
+  if(state.reminderLastShownKey === reminderKey) return;
+  // Compare current time to reminder time as minutes-since-midnight.
+  const [rh, rm] = prefs.dailyReminderTime.split(":").map(Number);
+  const reminderMinutes = rh*60 + rm;
+  const nowMinutes = now.getHours()*60 + now.getMinutes();
+  // Fire if we're at or past the reminder time today.
+  if(nowMinutes >= reminderMinutes){
     const openToday = state.tasks.filter((task)=>!task.done && task.timeframe==="Today").length;
     const body = openToday ? `You have ${openToday} task${openToday===1?"":"s"} tagged Today.` : "You have no Today tasks yet.";
     try{
@@ -182,7 +202,70 @@ function addTask(keepOpen){
   if(state.showComposer) setTimeout(()=>document.getElementById("task-input")?.focus(),10);
 }
 function toggleTask(id){ state.tasks = state.tasks.map((task)=>task.id===id?{...task,done:!task.done}:task); saveTasks(); render(); }
-function deleteTask(id){ state.tasks = state.tasks.filter((task)=>task.id!==id); saveTasks(); render(); }
+
+function deleteTask(id){
+  // Cancel any prior pending undo (commit it first).
+  if(state.undoTimerId){ clearTimeout(state.undoTimerId); state.undoTimerId = null; state.pendingUndo = null; }
+  const index = state.tasks.findIndex((t)=>t.id===id);
+  if(index === -1) return;
+  const task = state.tasks[index];
+  state.tasks = state.tasks.filter((t)=>t.id!==id);
+  state.pendingUndo = { task, index };
+  state.undoTimerId = setTimeout(()=>{
+    state.pendingUndo = null;
+    state.undoTimerId = null;
+    render();
+  }, 5000);
+  saveTasks();
+  render();
+}
+
+function performUndo(){
+  if(!state.pendingUndo) return;
+  if(state.undoTimerId){ clearTimeout(state.undoTimerId); state.undoTimerId = null; }
+  const { task, index } = state.pendingUndo;
+  const safeIndex = Math.min(index, state.tasks.length);
+  state.tasks.splice(safeIndex, 0, task);
+  state.pendingUndo = null;
+  saveTasks();
+  render();
+}
+
+function startEditTask(id){
+  const task = state.tasks.find((t)=>t.id===id);
+  if(!task) return;
+  state.editingTaskId = id;
+  state.editingDraft = { title: task.title, timeframe: task.timeframe, category: task.section };
+  render();
+  setTimeout(()=>document.getElementById("edit-task-input")?.focus(), 10);
+}
+
+function saveEditedTask(){
+  const id = state.editingTaskId;
+  if(id == null) return;
+  const title = state.editingDraft.title.trim();
+  if(!title){ cancelEdit(); return; }
+  state.tasks = state.tasks.map((task)=>{
+    if(task.id !== id) return task;
+    const timeframeChanged = task.timeframe !== state.editingDraft.timeframe;
+    return {
+      ...task,
+      title,
+      section: state.editingDraft.category || task.section,
+      timeframe: state.editingDraft.timeframe,
+      // Reset stamp if timeframe changed so rollover logic is consistent.
+      timeframeStamp: timeframeChanged ? stampFor(state.editingDraft.timeframe) : task.timeframeStamp
+    };
+  });
+  state.editingTaskId = null;
+  saveTasks();
+  render();
+}
+
+function cancelEdit(){
+  state.editingTaskId = null;
+  render();
+}
 function addCategory(name){
   const clean = name.trim();
   if(!clean) return;
@@ -233,7 +316,7 @@ function taskCard(task, showSection=false){
     <div class="task-card" draggable="false">
       <div class="task-top">
         <button class="check-btn ${task.done?"done":""}" data-action="toggle" data-id="${task.id}">${task.done?"✓":""}</button>
-        <div class="task-text">
+        <div class="task-text task-text-clickable" data-action="edit" data-id="${task.id}" role="button" tabindex="0">
           <div class="task-title ${task.done?"done":""}">${escapeHtml(task.title)}</div>
           ${showSection?`<div class="task-meta">${escapeHtml(task.section)}</div>`:""}
         </div>
@@ -241,7 +324,7 @@ function taskCard(task, showSection=false){
       </div>
       <div class="task-footer">
         <span class="pill ${pillClass(task.timeframe)}">${task.timeframe}</span>
-        <span class="hint">Swipe right to complete · left to delete</span>
+        <span class="hint">Tap title to edit · swipe right done · swipe left delete</span>
       </div>
     </div>
   </div>`;
@@ -322,6 +405,10 @@ function renderSettings(){
         <div class="swatch-row">
           ${accentPresets.map(([a,b])=>`<button class="setting-swatch ${(prefs.accent===a && prefs.accent2===b)?"active":""}" data-accent="${a}" data-accent2="${b}" style="background:linear-gradient(135deg,${a},${b})"></button>`).join("")}
         </div>
+        <div class="label" style="margin-top:14px">Appearance</div>
+        <div class="chip-row">
+          <button class="chip ${prefs.darkMode?"active":""}" id="toggle-dark-btn">${prefs.darkMode?"Dark mode on":"Dark mode off"}</button>
+        </div>
       </div>
       <div class="settings-item">
         <div class="label">Categories</div>
@@ -343,6 +430,36 @@ function renderSettings(){
         <div class="note" style="margin-top:10px">This uses browser notification permission and checks locally while the app is open. It is not a true server push alert.</div>
       </div>
     </div>
+  </div>`;
+}
+
+function renderEditSheet(){
+  if(state.editingTaskId == null) return "";
+  return `<div class="sheet-backdrop open" id="edit-sheet">
+    <div class="sheet">
+      <div class="small">Edit</div>
+      <h2>Edit to-do</h2>
+      <input id="edit-task-input" class="text-input" placeholder="Item name" value="${escapeHtml(state.editingDraft.title)}" />
+      <div class="label" style="margin-top:14px">Category</div>
+      <select id="edit-category-select" class="select-input">
+        ${prefs.categories.map((cat)=>`<option value="${escapeHtml(cat)}" ${state.editingDraft.category===cat?"selected":""}>${escapeHtml(cat)}</option>`).join("")}
+      </select>
+      <div class="label" style="margin-top:14px">When</div>
+      <div class="chip-row">
+        ${timeframeOptions.filter((t)=>t!=="All").map((option)=>`<button class="chip ${state.editingDraft.timeframe===option?"active":""}" data-edit-timeframe="${option}">${option}</button>`).join("")}
+      </div>
+      <button class="primary-btn" id="save-edit-btn">Save changes</button>
+      <button class="secondary-btn" id="cancel-edit-btn">Cancel</button>
+    </div>
+  </div>`;
+}
+
+function renderUndoSnackbar(){
+  if(!state.pendingUndo) return "";
+  const title = state.pendingUndo.task.title;
+  return `<div class="undo-snackbar" id="undo-snackbar" role="status" aria-live="polite">
+    <span class="undo-text">Deleted "${escapeHtml(title.length > 30 ? title.slice(0,30)+"…" : title)}"</span>
+    <button class="undo-btn" id="undo-btn">Undo</button>
   </div>`;
 }
 
@@ -400,9 +517,18 @@ function render(){
   if(state.activeTab === "Settings") mainView = renderSettings();
   if(prefs.categories.includes(state.activeTab)) mainView = renderSection();
 
-  app.innerHTML = `<div class="app-shell"><div class="phone">${mainView}</div>${renderNav()}${renderComposer()}${renderInstallHelp()}</div>`;
+  app.innerHTML = `<div class="app-shell"><div class="phone">${mainView}</div>${renderNav()}${renderComposer()}${renderInstallHelp()}${renderEditSheet()}${renderUndoSnackbar()}</div>`;
   bindEvents();
   attachSwipes();
+}
+
+function bindTaskListEvents(root){
+  root.querySelectorAll("[data-action='toggle']").forEach((btn)=>btn.onclick=(e)=>{e.stopPropagation();toggleTask(Number(btn.dataset.id));});
+  root.querySelectorAll("[data-action='delete']").forEach((btn)=>btn.onclick=(e)=>{e.stopPropagation();deleteTask(Number(btn.dataset.id));});
+  root.querySelectorAll("[data-action='edit']").forEach((el)=>{
+    el.onclick=(e)=>{e.stopPropagation();startEditTask(Number(el.dataset.id));};
+    el.onkeydown=(e)=>{ if(e.key==="Enter" || e.key===" "){ e.preventDefault(); startEditTask(Number(el.dataset.id)); } };
+  });
 }
 
 function bindEvents(){
@@ -410,6 +536,10 @@ function bindEvents(){
   document.querySelectorAll("[data-open-section]").forEach((btn)=>btn.onclick=()=>setTab(btn.dataset.openSection));
   document.querySelectorAll("[data-action='toggle']").forEach((btn)=>btn.onclick=(e)=>{e.stopPropagation();toggleTask(Number(btn.dataset.id));});
   document.querySelectorAll("[data-action='delete']").forEach((btn)=>btn.onclick=(e)=>{e.stopPropagation();deleteTask(Number(btn.dataset.id));});
+  document.querySelectorAll("[data-action='edit']").forEach((el)=>{
+    el.onclick=(e)=>{e.stopPropagation();startEditTask(Number(el.dataset.id));};
+    el.onkeydown=(e)=>{ if(e.key==="Enter" || e.key===" "){ e.preventDefault(); startEditTask(Number(el.dataset.id)); } };
+  });
   document.querySelectorAll("[data-sort]").forEach((btn)=>btn.onclick=()=>{state.selectedSort=btn.dataset.sort;render();});
   document.querySelectorAll("[data-draft-timeframe]").forEach((btn)=>btn.onclick=()=>{state.draft.timeframe=btn.dataset.draftTimeframe;render();setTimeout(()=>document.getElementById("task-input")?.focus(),10);});
   document.querySelectorAll("[data-accent]").forEach((btn)=>btn.onclick=()=>{prefs.accent=btn.dataset.accent;prefs.accent2=btn.dataset.accent2;savePrefs();render();});
@@ -434,7 +564,19 @@ function bindEvents(){
   });
 
   const search = document.getElementById("search-input");
-  if(search) search.addEventListener("input",(e)=>{state.query=e.target.value;});
+  if(search) search.addEventListener("input",(e)=>{
+    state.query=e.target.value;
+    // Re-render only the task list, not the whole app — preserves input focus.
+    const list = document.querySelector(".task-list");
+    if(list){
+      const tasks = getVisibleTasks();
+      list.innerHTML = tasks.length
+        ? tasks.map((task)=>taskCard(task)).join("")
+        : `<div class="empty"><strong>No matching items</strong><p>Try another filter or add a new to-do.</p></div>`;
+      bindTaskListEvents(list);
+      attachSwipes();
+    }
+  });
 
   const composer = document.getElementById("composer-sheet");
   if(composer){ composer.addEventListener("click",(e)=>{if(e.target.id==="composer-sheet"){state.showComposer=false;render();}}); }
@@ -452,38 +594,118 @@ function bindEvents(){
   }
   document.getElementById("add-keep-btn")?.addEventListener("click",()=>addTask(true));
   document.getElementById("add-close-btn")?.addEventListener("click",()=>addTask(false));
+
+  // Edit sheet bindings.
+  const editInput = document.getElementById("edit-task-input");
+  if(editInput){
+    editInput.addEventListener("input",(e)=>{state.editingDraft.title=e.target.value;});
+    editInput.addEventListener("keydown",(e)=>{
+      if(e.key==="Enter"){ e.preventDefault(); saveEditedTask(); }
+      if(e.key==="Escape"){ e.preventDefault(); cancelEdit(); }
+    });
+  }
+  document.getElementById("edit-category-select")?.addEventListener("change",(e)=>{state.editingDraft.category=e.target.value;});
+  document.querySelectorAll("[data-edit-timeframe]").forEach((btn)=>btn.onclick=()=>{
+    state.editingDraft.timeframe = btn.dataset.editTimeframe;
+    render();
+    setTimeout(()=>document.getElementById("edit-task-input")?.focus(),10);
+  });
+  document.getElementById("save-edit-btn")?.addEventListener("click",saveEditedTask);
+  document.getElementById("cancel-edit-btn")?.addEventListener("click",cancelEdit);
+  const editSheet = document.getElementById("edit-sheet");
+  if(editSheet){ editSheet.addEventListener("click",(e)=>{ if(e.target.id==="edit-sheet") cancelEdit(); }); }
+
+  // Undo snackbar binding.
+  document.getElementById("undo-btn")?.addEventListener("click", performUndo);
+
+  // Dark mode toggle binding.
+  document.getElementById("toggle-dark-btn")?.addEventListener("click",()=>{
+    prefs.darkMode = !prefs.darkMode;
+    savePrefs();
+    render();
+  });
+
+  // New-category input: support Enter to add quickly.
+  document.getElementById("new-category-input")?.addEventListener("keydown",(e)=>{
+    if(e.key==="Enter"){ e.preventDefault(); addCategory(e.target.value); }
+  });
 }
+
+// Active swipe drag, shared across renders. Window listeners are attached once below.
+let activeSwipe = null;
 
 function attachSwipes(){
   document.querySelectorAll(".task-wrap").forEach((wrap)=>{
     const card = wrap.querySelector(".task-card");
     const id = Number(wrap.dataset.task);
-    let startX = 0, currentX = 0, dragging = false;
 
-    const start = (x) => { dragging=true; startX=x; currentX=0; card.style.transition="none"; };
-    const move = (x) => {
-      if(!dragging) return;
-      currentX = x - startX;
-      const limited = Math.max(-120, Math.min(120, currentX));
+    const start = (x) => {
+      activeSwipe = { card, id, startX: x, currentX: 0 };
+      card.style.transition="none";
+    };
+    const cardMove = (x) => {
+      if(!activeSwipe || activeSwipe.card !== card) return;
+      activeSwipe.currentX = x - activeSwipe.startX;
+      const limited = Math.max(-120, Math.min(120, activeSwipe.currentX));
       card.style.transform = `translateX(${limited}px)`;
     };
-    const end = () => {
-      if(!dragging) return;
-      dragging=false;
+    const cardEnd = () => {
+      if(!activeSwipe || activeSwipe.card !== card) return;
+      const { currentX } = activeSwipe;
       card.style.transition="transform .18s ease";
+      activeSwipe = null;
       if(currentX <= -90){ deleteTask(id); return; }
       if(currentX >= 90){ toggleTask(id); return; }
       card.style.transform="translateX(0)";
     };
 
     card.addEventListener("touchstart",(e)=>start(e.touches[0].clientX),{passive:true});
-    card.addEventListener("touchmove",(e)=>move(e.touches[0].clientX),{passive:true});
-    card.addEventListener("touchend",end);
+    card.addEventListener("touchmove",(e)=>cardMove(e.touches[0].clientX),{passive:true});
+    card.addEventListener("touchend",cardEnd);
     card.addEventListener("mousedown",(e)=>start(e.clientX));
-    window.addEventListener("mousemove",(e)=>move(e.clientX));
-    window.addEventListener("mouseup",end);
   });
 }
+
+// Attach window-level mouse listeners ONCE, not per render.
+window.addEventListener("mousemove",(e)=>{
+  if(!activeSwipe) return;
+  activeSwipe.currentX = e.clientX - activeSwipe.startX;
+  const limited = Math.max(-120, Math.min(120, activeSwipe.currentX));
+  activeSwipe.card.style.transform = `translateX(${limited}px)`;
+});
+window.addEventListener("mouseup",()=>{
+  if(!activeSwipe) return;
+  const { card, id, currentX } = activeSwipe;
+  card.style.transition="transform .18s ease";
+  activeSwipe = null;
+  if(currentX <= -90){ deleteTask(id); return; }
+  if(currentX >= 90){ toggleTask(id); return; }
+  card.style.transform="translateX(0)";
+});
+
+// Global keyboard shortcuts (desktop). Ignored when typing in inputs.
+window.addEventListener("keydown", (e) => {
+  const tag = (e.target && e.target.tagName) || "";
+  const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  // Esc always closes any open sheet, even from inside an input.
+  if(e.key === "Escape"){
+    if(state.editingTaskId != null){ cancelEdit(); return; }
+    if(state.showComposer){ state.showComposer = false; render(); return; }
+    if(state.showInstallHelp){ state.showInstallHelp = false; render(); return; }
+  }
+  if(typing) return;
+  if(e.key === "n" || e.key === "N"){
+    e.preventDefault();
+    state.showComposer = true;
+    state.draft.category = prefs.categories.includes(state.activeTab) ? state.activeTab : (prefs.categories[0] || "Work");
+    render();
+    setTimeout(()=>document.getElementById("task-input")?.focus(), 10);
+  }
+  if(e.key === "/"){
+    const search = document.getElementById("search-input");
+    if(search){ e.preventDefault(); search.focus(); }
+  }
+});
 
 if("serviceWorker" in navigator){
   window.addEventListener("load",()=>{navigator.serviceWorker.register("./sw.js").catch(()=>{});});
